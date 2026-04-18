@@ -31,6 +31,8 @@ func replaceClozeVariables(cloze string) string {
 
 func AddToAnki(entry *WordEntry, deckName, modelName string) error {
 
+	// fmt.Printf("[AddToAnki] deckName: %s, modelName: %s, word: %s\n", deckName, modelName, entry.Word)
+
 	if deckName == "" {
 		deckName = defaultAnkiDeck
 	}
@@ -64,7 +66,7 @@ func AddToAnki(entry *WordEntry, deckName, modelName string) error {
 
 	resp, err := http.Post("http://localhost:8765", "application/json", bytes.NewBuffer(data))
 	if err != nil {
-		fmt.Println("error", err)
+		fmt.Println("[AddToAnki] HTTP error:", err)
 		return err
 	}
 	defer resp.Body.Close()
@@ -72,7 +74,7 @@ func AddToAnki(entry *WordEntry, deckName, modelName string) error {
 	var result AnkiResponse
 	json.NewDecoder(resp.Body).Decode(&result)
 
-	// fmt.Println("anki", result)
+	// fmt.Printf("[AddToAnki] response: %+v\n", result)
 	if result.Error != nil {
 		return fmt.Errorf("anki error: %v", result.Error)
 	}

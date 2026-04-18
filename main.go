@@ -19,6 +19,13 @@ const (
 
 func main() {
 
+	// 输出所有接收到的参数
+	fmt.Println("========== 接收到的参数 ==========")
+	for i, arg := range os.Args {
+		fmt.Printf("[%d] %s\n", i, arg)
+	}
+	fmt.Println("====================================")
+
 	if len(os.Args) < 2 {
 		fmt.Println("用法:")
 		fmt.Println("  scan <dir> [--dry-run] [--provider=ollama|openai] [--model=model_name] [--api-key=key] [--anki-deck=name] [--anki-model=name]")
@@ -37,6 +44,13 @@ func main() {
 		start := time.Now()
 		args := os.Args[2:]
 		args, provider, model, apiKey, ankiDeck, ankiModel := extractAIOptions(args)
+
+		// 调试：输出解析后的参数
+		fmt.Printf("provider: %s\n", provider)
+		fmt.Printf("model: %s\n", model)
+		fmt.Printf("apiKey: %s\n", apiKey)
+		fmt.Printf("ankiDeck: %s\n", ankiDeck)
+		fmt.Printf("ankiModel: %s\n", ankiModel)
 
 		if len(args) < 1 {
 			fmt.Println("用法: scan <dir> [--dry-run] [--provider=ollama|openai] [--api-key=key] [--anki-deck=name] [--anki-model=name]")
