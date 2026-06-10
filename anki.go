@@ -81,3 +81,73 @@ func AddToAnki(entry *WordEntry, deckName, modelName string) error {
 
 	return nil
 }
+
+func callAnkiConnect(action string, params interface{}) (interface{}, error) {
+	req := AnkiRequest{Action: action, Version: 6, Params: params}
+	data, _ := json.Marshal(req)
+	resp, err := http.Post("http://localhost:8765", "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var result AnkiResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	if result.Error != nil {
+		return nil, fmt.Errorf("anki error: %v", result.Error)
+	}
+	return result.Result, nil
+}
+
+func GetAnkiWords(deckName string) (map[string]bool, error) {
+	if deckName == "" {
+		deckName = defaultAnkiDeck
+	}
+	ids, err := callAnkiConnect("findNotes", map[string]interface{}{"query": "deck:" + deckName + " tag:auto"})
+	if err != nil {
+		return nil, err
+	}
+	idList, ok := ids.([]interface{})
+	if !ok || len(idList) == 0 {
+		return map[string]bool{}, nil
+	}
+	intIDs := make([]int, 0, len(idList))
+	for _, id := range idList {
+		if f, ok := id.(float64); ok {
+			intIDs = append(intIDs, int(f))
+		}
+	}
+	info, err := callAnkiConnect("notesInfo", map[string]interface{}{"notes": intIDs})
+	if err != nil {
+		return nil, err
+	}
+	words := make(map[string]bool)
+	infoList, ok := info.([]interface{})
+	if !ok {
+		return words, nil
+	}
+	for _, note := range infoList {
+		noteMap, ok := note.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		fields, ok := noteMap["fields"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		front, ok := fields["正面"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		val, ok := front["value"].(string)
+		if !ok || val == "" {
+			continue
+		}
+		word := strings.ToLower(strings.TrimSpace(strings.Split(val, "<br>")[0]))
+		if word != "" {
+			words[word] = true
+		}
+	}
+	return words, nil
+}

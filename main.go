@@ -79,6 +79,10 @@ func main() {
 			log.Fatal(err)
 		}
 
+		procLog := NewProcessLog(filepath.Join(dir, "log.json"))
+		procLog.Load()
+		batchID := procLog.StartBatch("scan", ankiDeck, ankiModel)
+
 		ctx := &ProcessContext{
 			Dict:      dict,
 			Lemma:     lemma,
@@ -87,18 +91,22 @@ func main() {
 			DryRun:    dryRun,
 			AnkiDeck:  ankiDeck,
 			AnkiModel: ankiModel,
+			BatchID:   batchID,
+			Log:       procLog,
 		}
 
 		if err := ScanObsidian(dir, ctx); err != nil {
 			log.Fatal(err)
 		}
 
-		// 统一保存（重要）
 		if !dryRun {
 			if err := dict.Save(); err != nil {
 				log.Fatal(err)
 			}
 			if err := lemma.Save(); err != nil {
+				log.Fatal(err)
+			}
+			if err := procLog.Save(); err != nil {
 				log.Fatal(err)
 			}
 		}
@@ -139,6 +147,10 @@ func main() {
 			log.Fatal(err)
 		}
 
+		procLog := NewProcessLog(filepath.Join(".", "log.json"))
+		procLog.Load()
+		batchID := procLog.StartBatch("add", ankiDeck, ankiModel)
+
 		ctx := &ProcessContext{
 			Dict:      dict,
 			Lemma:     lemma,
@@ -147,17 +159,21 @@ func main() {
 			DryRun:    false,
 			AnkiDeck:  ankiDeck,
 			AnkiModel: ankiModel,
+			BatchID:   batchID,
+			Log:       procLog,
 		}
 
 		for _, w := range args {
 			ProcessWord(w, ctx)
 		}
 
-		// 统一保存
 		if err := dict.Save(); err != nil {
 			log.Fatal(err)
 		}
 		if err := lemma.Save(); err != nil {
+			log.Fatal(err)
+		}
+		if err := procLog.Save(); err != nil {
 			log.Fatal(err)
 		}
 
@@ -199,6 +215,10 @@ func main() {
 			log.Fatal(err)
 		}
 
+		procLog := NewProcessLog(filepath.Join(".", "log.json"))
+		procLog.Load()
+		batchID := procLog.StartBatch("batch", ankiDeck, ankiModel)
+
 		ctx := &ProcessContext{
 			Dict:      dict,
 			Lemma:     lemma,
@@ -207,6 +227,8 @@ func main() {
 			DryRun:    false,
 			AnkiDeck:  ankiDeck,
 			AnkiModel: ankiModel,
+			BatchID:   batchID,
+			Log:       procLog,
 		}
 
 		f, err := os.Open(file)
@@ -236,9 +258,43 @@ func main() {
 		if err := lemma.Save(); err != nil {
 			log.Fatal(err)
 		}
+		if err := procLog.Save(); err != nil {
+			log.Fatal(err)
+		}
 
 		fmt.Println("batch 完成")
 		fmt.Printf("耗时: %.2fs\n", time.Since(start).Seconds())
+
+	// ========================
+	// 🔄 SYNC
+	// ========================
+	case "sync":
+		dir := "."
+		if len(os.Args) > 2 && !strings.HasPrefix(os.Args[2], "--") {
+			dir = os.Args[2]
+		}
+
+		dictDir := filepath.Join(dir, "dict")
+		dict := NewDictionary(filepath.Join(dir, "dictionary.json"))
+		if err := dict.Load(); err != nil {
+			log.Fatal(err)
+		}
+
+		lemma := NewLemmaStore(filepath.Join(dir, "lemma.json"))
+		if err := lemma.Load(); err != nil {
+			log.Fatal(err)
+		}
+
+		syncDict(dictDir, dict, lemma, false)
+
+		if err := dict.Save(); err != nil {
+			log.Fatal(err)
+		}
+		if err := lemma.Save(); err != nil {
+			log.Fatal(err)
+		}
+
+		fmt.Println("sync 完成")
 
 	// ========================
 	// 📤 EXPORT
@@ -265,8 +321,271 @@ func main() {
 		fmt.Println("export 完成")
 		fmt.Printf("耗时: %.2fs\n", time.Since(start).Seconds())
 
-	default:
-		fmt.Println("未知命令:", os.Args[1])
+
+	// ========================
+	// SYNC-ANKI
+	// ========================
+	case "sync-anki":
+		start := time.Now()
+		args := os.Args[2:]
+		args, _, _, _, ankiDeck, ankiModel := extractAIOptions(args)
+
+		dir := "."
+		if len(args) > 0 {
+			dir = args[0]
+		}
+
+		dict := NewDictionary(filepath.Join(dir, "dictionary.json"))
+		if err := dict.Load(); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("[DEBUG] dict path: %s, words: %d\n", dict.Path, len(dict.Words))
+
+		// 获取 Anki 中已有的单词
+		existing, err := GetAnkiWords(ankiDeck)
+		if err != nil {
+			fmt.Println("[WARN] cannot query Anki, will try adding all:", err)
+			existing = map[string]bool{}
+		}
+		fmt.Printf("Anki 中已有 %d 个词条\n", len(existing))
+
+		dictDir := filepath.Join(dir, "dict")
+		total := len(dict.Words)
+		skipped := 0
+		synced := 0
+		failed := 0
+
+		for word, entry := range dict.Words {
+			if existing[word] {
+				skipped++
+				continue
+			}
+			full := loadWordFromFile(dictDir, word)
+			var target *WordEntry
+			if full != nil {
+				target = full
+			} else {
+				tmp := entry
+				target = &tmp
+			}
+			if err := AddToAnki(target, ankiDeck, ankiModel); err != nil {
+				fmt.Printf("[FAIL] %s: %v\n", word, err)
+				failed++
+				continue
+			}
+			synced++
+			fmt.Printf("[SYNC] %s\n", word)
+		}
+
+		fmt.Printf("sync-anki done: %d new, %d skipped, %d failed, total %d, %.2fs\n", synced, skipped, failed, total, time.Since(start).Seconds())
+
+	// ========================
+	// 📝 LOG
+	// ========================
+	case "log":
+		dir := "."
+		if len(os.Args) > 2 && !strings.HasPrefix(os.Args[2], "--") {
+			dir = os.Args[2]
+		}
+		logPath := filepath.Join(dir, "log.json")
+		procLog := NewProcessLog(logPath)
+		if err := procLog.Load(); err != nil {
+			log.Fatal(err)
+		}
+		procLog.ListBatches()
+
+	// ========================
+	// 🔄 RESYNC
+	// ========================
+	case "resync":
+		if len(os.Args) < 3 {
+			fmt.Println("用法: resync <batch-id> [dir] [--anki-deck=name] [--anki-model=name]")
+			return
+		}
+
+		start := time.Now()
+		batchID := os.Args[2]
+		args := os.Args[3:]
+		args, _, _, _, ankiDeck, ankiModel := extractAIOptions(args)
+
+		dir := "."
+		if len(args) > 0 {
+			dir = args[0]
+		}
+
+		logPath := filepath.Join(dir, "log.json")
+		procLog := NewProcessLog(logPath)
+		if err := procLog.Load(); err != nil {
+			log.Fatal(err)
+		}
+
+		batch := procLog.GetBatch(batchID)
+		if batch == nil {
+			fmt.Printf("batch %s not found\n", batchID)
+			return
+		}
+
+		if ankiDeck == "" {
+			ankiDeck = batch.AnkiDeck
+		}
+		if ankiModel == "" {
+			ankiModel = batch.AnkiModel
+		}
+
+		dict := NewDictionary(filepath.Join(dir, "dictionary.json"))
+		if err := dict.Load(); err != nil {
+			log.Fatal(err)
+		}
+
+		// 获取 Anki 中已有的单词
+		existing, err := GetAnkiWords(ankiDeck)
+		if err != nil {
+			fmt.Println("[WARN] cannot query Anki, will try adding all:", err)
+			existing = map[string]bool{}
+		}
+		fmt.Printf("Anki 中已有 %d 个词条\n", len(existing))
+
+		dictDir := filepath.Join(dir, "dict")
+		synced := 0
+		skipped := 0
+		failed := 0
+
+		for _, wl := range batch.Words {
+			if wl.Status == "fail" {
+				continue
+			}
+			if existing[wl.Word] {
+				skipped++
+				continue
+			}
+			full := loadWordFromFile(dictDir, wl.Word)
+			var target *WordEntry
+			if full != nil {
+				target = full
+			} else if entry, ok := dict.Words[wl.Word]; ok {
+				tmp := entry
+				target = &tmp
+			} else {
+				fmt.Printf("[SKIP] %s not in dict\n", wl.Word)
+				continue
+			}
+			if err := AddToAnki(target, ankiDeck, ankiModel); err != nil {
+				fmt.Printf("[FAIL] %s: %v\n", wl.Word, err)
+				failed++
+				continue
+			}
+			synced++
+			fmt.Printf("[SYNC] %s\n", wl.Word)
+		}
+
+		fmt.Printf("resync done: %d new, %d skipped, %d failed, total %d, %.2fs\n", synced, skipped, failed, len(batch.Words), time.Since(start).Seconds())
+
+		// ========================
+		// ?? RETRY-ANKI
+		// ========================
+		case "retry-anki":
+			start := time.Now()
+			args := os.Args[2:]
+			args, _, _, _, ankiDeck, ankiModel := extractAIOptions(args)
+
+			var batchID string
+			dir := "."
+			for _, a := range args {
+				if strings.HasPrefix(a, "--") {
+					continue
+				}
+				if batchID == "" {
+					batchID = a
+				} else if dir == "." {
+					dir = a
+				}
+			}
+
+			logPath := filepath.Join(dir, "log.json")
+			procLog := NewProcessLog(logPath)
+			if err := procLog.Load(); err != nil {
+				log.Fatal(err)
+			}
+
+			if batchID == "" {
+				if len(procLog.Batches) == 0 {
+					fmt.Println("no batches found")
+					return
+				}
+				batchID = procLog.Batches[len(procLog.Batches)-1].BatchID
+			}
+
+			batch := procLog.GetBatch(batchID)
+			if batch == nil {
+				fmt.Printf("batch %s not found\n", batchID)
+				return
+			}
+
+			if ankiDeck == "" {
+				ankiDeck = batch.AnkiDeck
+			}
+			if ankiModel == "" {
+				ankiModel = batch.AnkiModel
+			}
+
+			dict := NewDictionary(filepath.Join(dir, "dictionary.json"))
+			if err := dict.Load(); err != nil {
+				log.Fatal(err)
+			}
+
+			existing, err := GetAnkiWords(ankiDeck)
+			if err != nil {
+				fmt.Println("[WARN] cannot query Anki, will try adding all:", err)
+				existing = map[string]bool{}
+			}
+			fmt.Printf("Anki ??? %d ???\n", len(existing))
+
+			dictDir := filepath.Join(dir, "dict")
+			retried := 0
+			skipped := 0
+			synced := 0
+			failed := 0
+
+			for i := range batch.Words {
+				wl := batch.Words[i]
+				if wl.Status == "fail" || wl.Status == "new:anki-ok" {
+					continue
+				}
+				if existing[wl.Word] {
+					skipped++
+					continue
+				}
+				full := loadWordFromFile(dictDir, wl.Word)
+				var target *WordEntry
+				if full != nil {
+					target = full
+				} else if entry, ok := dict.Words[wl.Word]; ok {
+					tmp := entry
+					target = &tmp
+				} else {
+					fmt.Printf("[SKIP] %s not in dict\n", wl.Word)
+					continue
+				}
+				retried++
+				if err := AddToAnki(target, ankiDeck, ankiModel); err != nil {
+					fmt.Printf("[FAIL] %s: %v\n", wl.Word, err)
+					batch.Words[i].Status = "new:anki-fail"
+					failed++
+					continue
+				}
+				batch.Words[i].Status = "new:anki-ok"
+				synced++
+				fmt.Printf("[SYNC] %s\n", wl.Word)
+			}
+
+			if err := procLog.Save(); err != nil {
+				log.Fatal(err)
+			}
+
+			fmt.Printf("retry-anki done: %d new, %d skipped, %d failed, retried %d, total %d, %.2fs\n", synced, skipped, failed, retried, len(batch.Words), time.Since(start).Seconds())
+
+		default:
+			fmt.Println("未知命令:", os.Args[1])
 	}
 }
 

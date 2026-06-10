@@ -15,6 +15,8 @@ type ProcessContext struct {
 	DryRun    bool
 	AnkiDeck  string
 	AnkiModel string
+	BatchID   string
+	Log       *ProcessLog
 }
 
 func normalizeFileName(w string) string {
@@ -42,11 +44,20 @@ func ProcessWord(rawInput string, ctx *ProcessContext) (*WordEntry, error) {
 		fmt.Println("[SKIP - dict]", raw)
 		// 从 .md 文件读取完整信息
 		entry := loadWordFromFile(ctx.DictDir, word)
+		var ankiErr error
 		if entry != nil {
-			AddToAnki(entry, ctx.AnkiDeck, ctx.AnkiModel)
+			ankiErr = AddToAnki(entry, ctx.AnkiDeck, ctx.AnkiModel)
 		} else {
 			// 如果文件不存在，使用字典中的数据
-			AddToAnki(&existing, ctx.AnkiDeck, ctx.AnkiModel)
+			ankiErr = AddToAnki(&existing, ctx.AnkiDeck, ctx.AnkiModel)
+		}
+		if ctx.Log != nil {
+			status := "skip"
+			if ankiErr != nil {
+				status = "skip:anki-fail"
+				fmt.Println("[Anki] skip failed:", raw, ankiErr)
+			}
+			ctx.Log.LogWord(ctx.BatchID, raw, word, status)
 		}
 		return nil, nil
 	}
@@ -54,14 +65,23 @@ func ProcessWord(rawInput string, ctx *ProcessContext) (*WordEntry, error) {
 	file := filepath.Join(ctx.DictDir, normalizeFileName(word)+".md")
 	if _, err := os.Stat(file); err == nil {
 		// 文件存在但不在字典中？尝试从字典获取
+		var ankiErr error
 		if existing, ok := ctx.Dict.Words[raw]; ok {
 			fmt.Println("[SKIP - file]", raw)
 			entry := loadWordFromFile(ctx.DictDir, raw)
 			if entry != nil {
-				AddToAnki(entry, ctx.AnkiDeck, ctx.AnkiModel)
+				ankiErr = AddToAnki(entry, ctx.AnkiDeck, ctx.AnkiModel)
 			} else {
-				AddToAnki(&existing, ctx.AnkiDeck, ctx.AnkiModel)
+				ankiErr = AddToAnki(&existing, ctx.AnkiDeck, ctx.AnkiModel)
 			}
+		}
+		if ctx.Log != nil {
+			status := "skip"
+			if ankiErr != nil {
+				status = "skip:anki-fail"
+				fmt.Println("[Anki] skip failed:", raw, ankiErr)
+			}
+			ctx.Log.LogWord(ctx.BatchID, raw, raw, status)
 		}
 		return nil, nil
 	}
@@ -75,6 +95,9 @@ func ProcessWord(rawInput string, ctx *ProcessContext) (*WordEntry, error) {
 	entry, err := ctx.AI.GenerateWordEntry(raw)
 	if err != nil {
 		fmt.Println("process error", err)
+		if ctx.Log != nil {
+			ctx.Log.LogWord(ctx.BatchID, raw, raw, "fail")
+		}
 		return nil, err
 	}
 	// fmt.Println("get entry", entry)
@@ -95,7 +118,16 @@ func ProcessWord(rawInput string, ctx *ProcessContext) (*WordEntry, error) {
 
 	writeWordNoteWithDir(ctx.DictDir, entry)
 
-	AddToAnki(entry, ctx.AnkiDeck, ctx.AnkiModel)
+	ankiErr := AddToAnki(entry, ctx.AnkiDeck, ctx.AnkiModel)
+
+	if ctx.Log != nil {
+		status := "new"
+		if ankiErr != nil {
+			status = "new:anki-fail"
+			fmt.Println("[Anki] add failed:", raw, ankiErr)
+		}
+		ctx.Log.LogWord(ctx.BatchID, raw, entry.Word, status)
+	}
 
 	return entry, nil
 }
