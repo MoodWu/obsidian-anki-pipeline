@@ -98,7 +98,11 @@ func (pl *ProcessLog) ListBatches() {
 			switch w.Status {
 			case "new":
 				newCount++
+			case "new:anki-ok":
+				newCount++
 			case "skip":
+				skipCount++
+			case "skip:anki-ok":
 				skipCount++
 			case "fail":
 				failCount++
