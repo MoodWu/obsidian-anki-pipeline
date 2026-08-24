@@ -28,9 +28,9 @@ func main() {
 
 	if len(os.Args) < 2 {
 		fmt.Println("用法:")
-		fmt.Println("  scan <dir> [--dry-run] [--provider=ollama|openai] [--model=model_name] [--api-key=key] [--anki-deck=name] [--anki-model=name]")
-		fmt.Println("  add <word1> [word2 ...] [--provider=ollama|openai] [--model=model_name] [--api-key=key] [--anki-deck=name] [--anki-model=name]")
-		fmt.Println("  batch <file> [--provider=ollama|openai] [--model=model_name] [--api-key=key] [--anki-deck=name] [--anki-model=name]")
+		fmt.Println("  scan <dir> [--dry-run] [--provider=ollama|openai] [--model=model_name] [--api-key=key] [--api-base=url] [--api-key-header] [--anki-deck=name] [--anki-model=name]")
+		fmt.Println("  add <word1> [word2 ...] [--provider=ollama|openai] [--model=model_name] [--api-key=key] [--api-base=url] [--api-key-header] [--anki-deck=name] [--anki-model=name]")
+		fmt.Println("  batch <file> [--provider=ollama|openai] [--model=model_name] [--api-key=key] [--api-base=url] [--api-key-header] [--anki-deck=name] [--anki-model=name]")
 		fmt.Println("  export <file>")
 		return
 	}
@@ -43,17 +43,18 @@ func main() {
 	case "scan":
 		start := time.Now()
 		args := os.Args[2:]
-		args, provider, model, apiKey, ankiDeck, ankiModel := extractAIOptions(args)
+		args, provider, model, apiKey, apiBase, ankiDeck, ankiModel, apiKeyHeader := extractAIOptions(args)
 
 		// 调试：输出解析后的参数
 		fmt.Printf("provider: %s\n", provider)
+		fmt.Printf("apiBase: %s\n", apiBase)
 		fmt.Printf("model: %s\n", model)
 		fmt.Printf("apiKey: %s\n", apiKey)
 		fmt.Printf("ankiDeck: %s\n", ankiDeck)
 		fmt.Printf("ankiModel: %s\n", ankiModel)
 
 		if len(args) < 1 {
-			fmt.Println("用法: scan <dir> [--dry-run] [--provider=ollama|openai] [--api-key=key] [--anki-deck=name] [--anki-model=name]")
+			fmt.Println("用法: scan <dir> [--dry-run] [--provider=ollama|openai] [--api-key=key] [--api-base=url] [--api-key-header] [--anki-deck=name] [--anki-model=name]")
 			return
 		}
 
@@ -64,7 +65,7 @@ func main() {
 		jsonPath := filepath.Join(dir, "dictionary.json")
 		lemmaPath := filepath.Join(dir, "lemma.json")
 
-		aiClient, err := NewAIClient(provider, model, apiKey)
+		aiClient, err := NewAIClient(provider, model, apiKey, apiBase, apiKeyHeader)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -120,14 +121,14 @@ func main() {
 	case "add":
 		start := time.Now()
 		args := os.Args[2:]
-		args, provider, model, apiKey, ankiDeck, ankiModel := extractAIOptions(args)
+		args, provider, model, apiKey, apiBase, ankiDeck, ankiModel, apiKeyHeader := extractAIOptions(args)
 
 		if len(args) < 1 {
-			fmt.Println("用法: add <word1> [word2 ...] [--provider=ollama|openai] [--api-key=key] [--anki-deck=name] [--anki-model=name]")
+			fmt.Println("用法: add <word1> [word2 ...] [--provider=ollama|openai] [--api-key=key] [--api-base=url] [--api-key-header] [--anki-deck=name] [--anki-model=name]")
 			return
 		}
 
-		aiClient, err := NewAIClient(provider, model, apiKey)
+		aiClient, err := NewAIClient(provider, model, apiKey, apiBase, apiKeyHeader)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -186,16 +187,16 @@ func main() {
 	case "batch":
 		start := time.Now()
 		args := os.Args[2:]
-		args, provider, model, apiKey, ankiDeck, ankiModel := extractAIOptions(args)
+		args, provider, model, apiKey, apiBase, ankiDeck, ankiModel, apiKeyHeader := extractAIOptions(args)
 
 		if len(args) < 1 {
-			fmt.Println("用法: batch <file> [--provider=ollama|openai] [--api-key=key] [--anki-deck=name] [--anki-model=name]")
+			fmt.Println("用法: batch <file> [--provider=ollama|openai] [--api-key=key] [--api-base=url] [--api-key-header] [--anki-deck=name] [--anki-model=name]")
 			return
 		}
 
 		file := args[0]
 
-		aiClient, err := NewAIClient(provider, model, apiKey)
+		aiClient, err := NewAIClient(provider, model, apiKey, apiBase, apiKeyHeader)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -328,7 +329,7 @@ func main() {
 	case "sync-anki":
 		start := time.Now()
 		args := os.Args[2:]
-		args, _, _, _, ankiDeck, ankiModel := extractAIOptions(args)
+		args, _, _, _, _, ankiDeck, ankiModel, _ := extractAIOptions(args)
 
 		dir := "."
 		if len(args) > 0 {
@@ -406,7 +407,7 @@ func main() {
 		start := time.Now()
 		batchID := os.Args[2]
 		args := os.Args[3:]
-		args, _, _, _, ankiDeck, ankiModel := extractAIOptions(args)
+		args, _, _, _, _, ankiDeck, ankiModel, _ := extractAIOptions(args)
 
 		dir := "."
 		if len(args) > 0 {
@@ -486,7 +487,7 @@ func main() {
 		case "retry-anki":
 			start := time.Now()
 			args := os.Args[2:]
-			args, _, _, _, ankiDeck, ankiModel := extractAIOptions(args)
+			args, _, _, _, _, ankiDeck, ankiModel, _ := extractAIOptions(args)
 
 			var batchID string
 			dir := "."
@@ -589,10 +590,12 @@ func main() {
 	}
 }
 
-func extractAIOptions(args []string) ([]string, string, string, string, string, string) {
+func extractAIOptions(args []string) ([]string, string, string, string, string, string, string, bool) {
 	provider := getEnvDefault("AI_PROVIDER", defaultAIProvider)
 	model := getEnvDefault("AI_MODEL", "")
 	apiKey := getEnvDefault("OPENAI_API_KEY", "")
+	apiBase := getEnvDefault("OPENAI_API_BASE", "")
+	apiKeyHeader := false
 	ankiDeck := getEnvDefault("ANKI_DECK", defaultAnkiDeck)
 	ankiModel := getEnvDefault("ANKI_MODEL", defaultAnkiModel)
 	filtered := make([]string, 0, len(args))
@@ -617,7 +620,20 @@ func extractAIOptions(args []string) ([]string, string, string, string, string, 
 			i++
 			continue
 		}
-		if strings.HasPrefix(arg, "--api-key=") {
+		if arg == "--api-key-header" {
+		apiKeyHeader = true
+		continue
+	}
+	if strings.HasPrefix(arg, "--api-base=") {
+		apiBase = strings.TrimPrefix(arg, "--api-base=")
+		continue
+	}
+	if arg == "--api-base" && i+1 < len(args) {
+		apiBase = args[i+1]
+		i++
+		continue
+	}
+	if strings.HasPrefix(arg, "--api-key=") {
 			apiKey = strings.TrimPrefix(arg, "--api-key=")
 			continue
 		}
@@ -651,7 +667,7 @@ func extractAIOptions(args []string) ([]string, string, string, string, string, 
 		model = defaultModelForProvider(provider)
 	}
 
-	return filtered, provider, model, apiKey, ankiDeck, ankiModel
+	return filtered, provider, model, apiKey, apiBase, ankiDeck, ankiModel, apiKeyHeader
 }
 
 func getEnvDefault(key, defaultValue string) string {

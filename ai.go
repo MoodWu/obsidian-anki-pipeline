@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -30,7 +32,15 @@ func defaultModelForProvider(provider string) string {
 	}
 }
 
-func NewAIClient(provider, model, apiKey string) (AIClient, error) {
+func envDefault(key, defaultValue string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return defaultValue
+}
+
+func NewAIClient(provider, model, apiKey, apiBase string, useAPIKeyHeader ...bool) (AIClient, error) {
+	useKeyHeader := len(useAPIKeyHeader) > 0 && useAPIKeyHeader[0]
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	if model == "" {
 		model = defaultModelForProvider(provider)
@@ -43,17 +53,18 @@ func NewAIClient(provider, model, apiKey string) (AIClient, error) {
 		if apiKey == "" {
 			return nil, fmt.Errorf("openai: api key is required, pass --api-key or set OPENAI_API_KEY")
 		}
-		return NewOpenAIClient(model, apiKey), nil
+		return NewOpenAIClient(model, apiKey, apiBase, useKeyHeader), nil
 	default:
 		return nil, fmt.Errorf("unknown AI provider: %s", provider)
 	}
 }
 
 type OpenAIClient struct {
-	URL    string
-	Model  string
-	APIKey string
-	Client *http.Client
+	URL             string
+	Model           string
+	APIKey          string
+	UseAPIKeyHeader bool
+	Client          *http.Client
 }
 
 type openAIChatRequest struct {
@@ -69,11 +80,12 @@ type openAIChatResponse struct {
 	Choices []openAIChatChoice `json:"choices"`
 }
 
-func NewOpenAIClient(model, apiKey string) *OpenAIClient {
+func NewOpenAIClient(model, apiKey, apiBase string, useAPIKeyHeader bool) *OpenAIClient {
 	return &OpenAIClient{
-		URL:    defaultOpenAIURL,
+		URL:    func() string { if apiBase != "" { return apiBase }; return envDefault("OPENAI_API_BASE", defaultOpenAIURL) }(),
 		Model:  model,
 		APIKey: apiKey,
+		UseAPIKeyHeader: useAPIKeyHeader,
 		Client: &http.Client{Timeout: 120 * time.Second},
 	}
 }
@@ -92,13 +104,17 @@ func (c *OpenAIClient) GenerateWordEntry(word string) (*WordEntry, error) {
 	}
 
 	// fmt.Println(string(data))
-	req, err := http.NewRequest("POST", c.URL, bytes.NewBuffer(data))
+req, err := http.NewRequest("POST", c.URL, bytes.NewBuffer(data))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+		if c.UseAPIKeyHeader {
+			req.Header.Set("api-key", c.APIKey)
+		} else {
+			req.Header.Set("Authorization", "Bearer "+c.APIKey)
+		}
 	}
 
 	resp, err := c.Client.Do(req)
@@ -107,13 +123,22 @@ func (c *OpenAIClient) GenerateWordEntry(word string) (*WordEntry, error) {
 	}
 	defer resp.Body.Close()
 
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("openai: failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("openai: request failed status=%d body=%s", resp.StatusCode, string(bodyBytes))
+	}
+
 	var result openAIChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return nil, fmt.Errorf("openai: decode response failed: %w, body=%s", err, string(bodyBytes))
 	}
 
 	if len(result.Choices) == 0 {
-		return nil, fmt.Errorf("openai: empty choices")
+		return nil, fmt.Errorf("openai: empty choices, status=%d body=%s", resp.StatusCode, string(bodyBytes))
 	}
 
 	cleaned := cleanJSONResponse(result.Choices[0].Message.Content)
