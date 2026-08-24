@@ -8,15 +8,17 @@ import (
 )
 
 type ProcessContext struct {
-	Dict      *Dictionary
-	Lemma     *LemmaStore
-	AI        AIClient
-	DictDir   string
-	DryRun    bool
-	AnkiDeck  string
-	AnkiModel string
-	BatchID   string
-	Log       *ProcessLog
+	Dict         *Dictionary
+	Lemma        *LemmaStore
+	AI           AIClient
+	DictDir      string
+	DryRun       bool
+	PendingOnly  bool
+	Pending      *PendingQueue
+	AnkiDeck     string
+	AnkiModel    string
+	BatchID      string
+	Log          *ProcessLog
 }
 
 func normalizeFileName(w string) string {
@@ -89,6 +91,12 @@ func ProcessWord(rawInput string, ctx *ProcessContext) (*WordEntry, error) {
 	fmt.Println("[PROCESS]", raw)
 
 	if ctx.DryRun {
+		return nil, nil
+	}
+
+	if ctx.PendingOnly && ctx.Pending != nil {
+		ctx.Pending.Add(raw)
+		fmt.Println("[QUEUED]", raw)
 		return nil, nil
 	}
 
@@ -203,4 +211,52 @@ func loadWordFromFile(dictDir, word string) *WordEntry {
 	}
 
 	return entry
+}
+
+
+func ProcessWordBatch(words []string, ctx *ProcessContext) map[string]error {
+	errMap := make(map[string]error)
+
+	results, batchErrs := ctx.AI.GenerateWordEntryBatch(words)
+	for _, w := range words {
+		if e, ok := batchErrs[w]; ok && e != nil {
+			errMap[w] = e
+			if ctx.Log != nil {
+				ctx.Log.LogWord(ctx.BatchID, w, w, "fail")
+			}
+			continue
+		}
+		entry, ok := results[w]
+		if !ok || entry == nil {
+			errMap[w] = fmt.Errorf("no entry returned")
+			if ctx.Log != nil {
+				ctx.Log.LogWord(ctx.BatchID, w, w, "fail")
+			}
+			continue
+		}
+
+		isPhrase := strings.Contains(w, " ")
+		if entry.Type == "" {
+			if isPhrase {
+				entry.Type = "phrase"
+			} else {
+				entry.Type = "word"
+			}
+		}
+
+		ctx.Lemma.Set(w, entry.Word)
+		ctx.Dict.Add(*entry)
+		writeWordNoteWithDir(ctx.DictDir, entry)
+		ankiErr := AddToAnki(entry, ctx.AnkiDeck, ctx.AnkiModel)
+
+		if ctx.Log != nil {
+			status := "new:anki-ok"
+			if ankiErr != nil {
+				status = "new:anki-fail"
+				fmt.Println("[Anki] add failed:", w, ankiErr)
+			}
+			ctx.Log.LogWord(ctx.BatchID, w, entry.Word, status)
+		}
+	}
+	return errMap
 }

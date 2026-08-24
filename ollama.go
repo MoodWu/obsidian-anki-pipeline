@@ -80,6 +80,29 @@ func BuildPrompt(content string) []Message {
 	return ret
 
 }
+
+
+func BuildBatchPrompt(words []string) []Message {
+	wordList := strings.Join(words, ", ")
+	system := "你是一个专业的Anki卡片整理师，请为以下多个英语单词/短语各生成一个学习卡片(JSON)。\n" +
+		"整理规则：\n" +
+		"1. word字段使用输入的原形，如果不是原形必须转为原形\n" +
+		"2. 判断类型：word / phrase\n" +
+		"3. phonetic字段是word的国际音标\n" +
+		"4. note字段包含发音规则、词根词缀等特殊说明（中英两种输出）\n" +
+		"5. original字段使用输入词\n" +
+		"6. meaning字段格式：词性+释义，先英文后中文，多种词性用回车分隔\n" +
+		"7. example和cloze必须使用原词，且不要相同\n" +
+		"8. translation是example的中文释义\n\n" +
+		"返回一个JSON数组，每个元素格式：\n" +
+		"{\"word\":\"\",\"original\":\"\",\"type\":\"\",\"phonetic\":\"\",\"meaning\":\"\",\"example\":\"\",\"translation\":\"\",\"cloze\":\"\",\"note\":\"\",\"aliases\":[]}\n\n" +
+		"只返回JSON数组，不要其他文字。必须为每个输入单词都生成条目，顺序与输入一致。"
+
+	return []Message{
+		{Role: "system", Content: system},
+		{Role: "user", Content: wordList},
+	}
+}
 func (c *OllamaClient) GenerateWordEntry(word string) (*WordEntry, error) {
 
 	// reqBody := GenerateRequest{
@@ -183,6 +206,86 @@ func (c *OllamaClient) GenerateWordEntry(word string) (*WordEntry, error) {
 // 	s = strings.TrimSuffix(s, "```")
 // 	return strings.TrimSpace(s)
 // }
+
+func (c *OllamaClient) GenerateWordEntryBatch(words []string) (map[string]*WordEntry, map[string]error) {
+	results := make(map[string]*WordEntry)
+	errs := make(map[string]error)
+
+	messages := BuildBatchPrompt(words)
+	reqBody := map[string]interface{}{
+		"model":    c.Model,
+		"messages": messages,
+	}
+	data, _ := json.Marshal(reqBody)
+
+	req, err := http.NewRequest("POST", c.URL, bytes.NewBuffer(data))
+	if err != nil {
+		for _, w := range words {
+			errs[w] = err
+		}
+		return results, errs
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey := strings.TrimSpace(os.Getenv("OLLAMA_API_KEY")); apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := c.Client.Do(req)
+	if err != nil {
+		for _, w := range words {
+			errs[w] = err
+		}
+		return results, errs
+	}
+	defer resp.Body.Close()
+
+	var result GenerateResponse
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	cleaned := cleanJSONResponse(result.Response)
+	var entries []WordEntry
+	if err := json.Unmarshal([]byte(cleaned), &entries); err != nil {
+		for _, w := range words {
+			errs[w] = fmt.Errorf("parse entries: %w", err)
+		}
+		return results, errs
+	}
+
+	indexed := make(map[string][]WordEntry)
+	for _, e := range entries {
+		key := strings.ToLower(strings.TrimSpace(e.Original))
+		indexed[key] = append(indexed[key], e)
+	}
+
+	for _, w := range words {
+		wl := strings.ToLower(strings.TrimSpace(w))
+		matched, ok := indexed[wl]
+		if !ok || len(matched) == 0 {
+			errs[w] = fmt.Errorf("no entry in batch response")
+			continue
+		}
+		ret := matched[0]
+		if ret.Original == "" {
+			ret.Original = w
+		}
+		if len(matched) > 1 {
+			for _, v := range matched {
+				ret.Meaning = v.Type + ": " + v.Meaning + "\n" + v.Translation + "\n" + v.Example + "\n\n" + ret.Meaning
+				ret.Note = v.Type + ": " + v.Note + "\n\n" + ret.Note
+				ret.Example = v.Type + ": " + v.Example + "\n\n" + ret.Example
+				ret.Translation = v.Type + ": " + v.Translation + "\n\n" + ret.Translation
+			}
+		}
+		if ret.Translation == "" {
+			ret.Translation = matched[0].Meaning
+		}
+		ret.Aliases = make([]string, 0)
+		ret.AddedAt = time.Now().Format("2006-01-02")
+		results[w] = &ret
+	}
+
+	return results, errs
+}
 
 func cleanJSONResponse(s string) string {
 	s = strings.TrimSpace(s)

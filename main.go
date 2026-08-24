@@ -28,9 +28,10 @@ func main() {
 
 	if len(os.Args) < 2 {
 		fmt.Println("用法:")
-		fmt.Println("  scan <dir> [--dry-run] [--provider=ollama|openai] [--model=model_name] [--api-key=key] [--api-base=url] [--api-key-header] [--anki-deck=name] [--anki-model=name]")
-		fmt.Println("  add <word1> [word2 ...] [--provider=ollama|openai] [--model=model_name] [--api-key=key] [--api-base=url] [--api-key-header] [--anki-deck=name] [--anki-model=name]")
-		fmt.Println("  batch <file> [--provider=ollama|openai] [--model=model_name] [--api-key=key] [--api-base=url] [--api-key-header] [--anki-deck=name] [--anki-model=name]")
+		fmt.Println("  scan <dir> [--dry-run] [--provider=ollama|openai] [--model=model_name] [--api-key=key] [--api-base=url] [--api-key-header] [--batchcount=N] [--anki-deck=name] [--anki-model=name]")
+		fmt.Println("  add <word1> [word2 ...] [--provider=ollama|openai] [--model=model_name] [--api-key=key] [--api-base=url] [--api-key-header] [--batchcount=N] [--anki-deck=name] [--anki-model=name]")
+		fmt.Println("  batch <file> [--provider=ollama|openai] [--model=model_name] [--api-key=key] [--api-base=url] [--api-key-header] [--batchcount=N] [--anki-deck=name] [--anki-model=name]")
+		fmt.Println("  process [dir] [--batchcount=N] [--provider=ollama|openai] [--model=model_name] [--api-key=key] [--api-base=url] [--api-key-header] [--anki-deck=name] [--anki-model=name]")
 		fmt.Println("  export <file>")
 		return
 	}
@@ -43,7 +44,7 @@ func main() {
 	case "scan":
 		start := time.Now()
 		args := os.Args[2:]
-		args, provider, model, apiKey, apiBase, ankiDeck, ankiModel, apiKeyHeader := extractAIOptions(args)
+		args, provider, model, apiKey, apiBase, ankiDeck, ankiModel, apiKeyHeader, _ := extractAIOptions(args)
 
 		// 调试：输出解析后的参数
 		fmt.Printf("provider: %s\n", provider)
@@ -54,12 +55,21 @@ func main() {
 		fmt.Printf("ankiModel: %s\n", ankiModel)
 
 		if len(args) < 1 {
-			fmt.Println("用法: scan <dir> [--dry-run] [--provider=ollama|openai] [--api-key=key] [--api-base=url] [--api-key-header] [--anki-deck=name] [--anki-model=name]")
+			fmt.Println("用法: scan <dir> [--dry-run] [--provider=ollama|openai] [--api-key=key] [--api-base=url] [--api-key-header] [--batchcount=N] [--anki-deck=name] [--anki-model=name]")
 			return
 		}
 
 		dir := args[0]
-		dryRun := len(args) > 1 && args[1] == "--dry-run"
+		dryRun := false
+		pendingOnly := false
+		for _, a := range args[1:] {
+			if a == "--dry-run" {
+				dryRun = true
+			}
+			if a == "--pending" {
+				pendingOnly = true
+			}
+		}
 
 		dictDir := filepath.Join(dir, "dict")
 		jsonPath := filepath.Join(dir, "dictionary.json")
@@ -80,16 +90,24 @@ func main() {
 			log.Fatal(err)
 		}
 
+		pendingPath := filepath.Join(dir, "pending.json")
+		pq := NewPendingQueue(pendingPath)
+		if err := pq.Load(); err != nil {
+			log.Fatal(err)
+		}
+
 		procLog := NewProcessLog(filepath.Join(dir, "log.json"))
 		procLog.Load()
 		batchID := procLog.StartBatch("scan", ankiDeck, ankiModel)
 
 		ctx := &ProcessContext{
-			Dict:      dict,
-			Lemma:     lemma,
-			AI:        aiClient,
-			DictDir:   dictDir,
-			DryRun:    dryRun,
+			Dict:        dict,
+			Lemma:       lemma,
+			AI:          aiClient,
+			DictDir:     dictDir,
+			DryRun:      dryRun,
+			PendingOnly: pendingOnly,
+			Pending:     pq,
 			AnkiDeck:  ankiDeck,
 			AnkiModel: ankiModel,
 			BatchID:   batchID,
@@ -110,6 +128,9 @@ func main() {
 			if err := procLog.Save(); err != nil {
 				log.Fatal(err)
 			}
+			if err := pq.Save(); err != nil {
+				log.Fatal(err)
+			}
 		}
 
 		fmt.Println("scan 完成")
@@ -121,10 +142,10 @@ func main() {
 	case "add":
 		start := time.Now()
 		args := os.Args[2:]
-		args, provider, model, apiKey, apiBase, ankiDeck, ankiModel, apiKeyHeader := extractAIOptions(args)
+		args, provider, model, apiKey, apiBase, ankiDeck, ankiModel, apiKeyHeader, _ := extractAIOptions(args)
 
 		if len(args) < 1 {
-			fmt.Println("用法: add <word1> [word2 ...] [--provider=ollama|openai] [--api-key=key] [--api-base=url] [--api-key-header] [--anki-deck=name] [--anki-model=name]")
+			fmt.Println("用法: add <word1> [word2 ...] [--provider=ollama|openai] [--api-key=key] [--api-base=url] [--api-key-header] [--batchcount=N] [--anki-deck=name] [--anki-model=name]")
 			return
 		}
 
@@ -187,10 +208,10 @@ func main() {
 	case "batch":
 		start := time.Now()
 		args := os.Args[2:]
-		args, provider, model, apiKey, apiBase, ankiDeck, ankiModel, apiKeyHeader := extractAIOptions(args)
+		args, provider, model, apiKey, apiBase, ankiDeck, ankiModel, apiKeyHeader, _ := extractAIOptions(args)
 
 		if len(args) < 1 {
-			fmt.Println("用法: batch <file> [--provider=ollama|openai] [--api-key=key] [--api-base=url] [--api-key-header] [--anki-deck=name] [--anki-model=name]")
+			fmt.Println("用法: batch <file> [--provider=ollama|openai] [--api-key=key] [--api-base=url] [--api-key-header] [--batchcount=N] [--anki-deck=name] [--anki-model=name]")
 			return
 		}
 
@@ -329,7 +350,7 @@ func main() {
 	case "sync-anki":
 		start := time.Now()
 		args := os.Args[2:]
-		args, _, _, _, _, ankiDeck, ankiModel, _ := extractAIOptions(args)
+		args, _, _, _, _, ankiDeck, ankiModel, _, _ := extractAIOptions(args)
 
 		dir := "."
 		if len(args) > 0 {
@@ -407,7 +428,7 @@ func main() {
 		start := time.Now()
 		batchID := os.Args[2]
 		args := os.Args[3:]
-		args, _, _, _, _, ankiDeck, ankiModel, _ := extractAIOptions(args)
+		args, _, _, _, _, ankiDeck, ankiModel, _, _ := extractAIOptions(args)
 
 		dir := "."
 		if len(args) > 0 {
@@ -487,7 +508,7 @@ func main() {
 		case "retry-anki":
 			start := time.Now()
 			args := os.Args[2:]
-			args, _, _, _, _, ankiDeck, ankiModel, _ := extractAIOptions(args)
+			args, _, _, _, _, ankiDeck, ankiModel, _, _ := extractAIOptions(args)
 
 			var batchID string
 			dir := "."
@@ -590,12 +611,13 @@ func main() {
 	}
 }
 
-func extractAIOptions(args []string) ([]string, string, string, string, string, string, string, bool) {
+func extractAIOptions(args []string) ([]string, string, string, string, string, string, string, bool, int) {
 	provider := getEnvDefault("AI_PROVIDER", defaultAIProvider)
 	model := getEnvDefault("AI_MODEL", "")
 	apiKey := getEnvDefault("OPENAI_API_KEY", "")
 	apiBase := getEnvDefault("OPENAI_API_BASE", "")
 	apiKeyHeader := false
+	batchCount := 20
 	ankiDeck := getEnvDefault("ANKI_DECK", defaultAnkiDeck)
 	ankiModel := getEnvDefault("ANKI_MODEL", defaultAnkiModel)
 	filtered := make([]string, 0, len(args))
@@ -620,7 +642,11 @@ func extractAIOptions(args []string) ([]string, string, string, string, string, 
 			i++
 			continue
 		}
-		if arg == "--api-key-header" {
+		if strings.HasPrefix(arg, "--batchcount=") {
+		fmt.Sscanf(strings.TrimPrefix(arg, "--batchcount="), "%d", &batchCount)
+		continue
+	}
+	if arg == "--api-key-header" {
 		apiKeyHeader = true
 		continue
 	}
@@ -667,7 +693,7 @@ func extractAIOptions(args []string) ([]string, string, string, string, string, 
 		model = defaultModelForProvider(provider)
 	}
 
-	return filtered, provider, model, apiKey, apiBase, ankiDeck, ankiModel, apiKeyHeader
+	return filtered, provider, model, apiKey, apiBase, ankiDeck, ankiModel, apiKeyHeader, batchCount
 }
 
 func getEnvDefault(key, defaultValue string) string {
