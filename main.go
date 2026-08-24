@@ -44,7 +44,7 @@ func main() {
 	case "scan":
 		start := time.Now()
 		args := os.Args[2:]
-		args, provider, model, apiKey, apiBase, ankiDeck, ankiModel, apiKeyHeader, _ := extractAIOptions(args)
+		args, provider, model, apiKey, apiBase, ankiDeck, ankiModel, apiKeyHeader, batchCount := extractAIOptions(args)
 
 		// 调试：输出解析后的参数
 		fmt.Printf("provider: %s\n", provider)
@@ -127,6 +127,80 @@ func main() {
 			if err := pq.Save(); err != nil {
 				log.Fatal(err)
 			}
+
+		// Phase 2: batch process the queue
+		if !dryRun && pq.HasProcessable() {
+			fmt.Println("\n--- Starting batch processing ---")
+
+			processLog := NewProcessLog(filepath.Join(dir, "log.json"))
+			processLog.Load()
+			processBatchID := processLog.StartBatch("process", ankiDeck, ankiModel)
+
+			pctx := &ProcessContext{
+				Dict:      dict,
+				Lemma:     lemma,
+				AI:        aiClient,
+				DictDir:   dictDir,
+				AnkiDeck:  ankiDeck,
+				AnkiModel: ankiModel,
+				BatchID:   processBatchID,
+				Log:       processLog,
+			}
+
+			totalProcessed := 0
+			totalFailed := 0
+			round := 0
+			for pq.HasProcessable() {
+				round++
+				batch := pq.GetBatch(batchCount)
+				if len(batch) == 0 {
+					break
+				}
+				words := make([]string, len(batch))
+				for i, b := range batch {
+					words[i] = b.Word
+				}
+				fmt.Printf("\n--- Batch %d: %d words ---\n", round, len(words))
+
+				errMap := ProcessWordBatch(words, pctx)
+				for _, w := range words {
+					if e, ok := errMap[w]; ok && e != nil {
+						pq.RecordFailure(w, e.Error())
+						totalFailed++
+						fmt.Printf("[FAIL] %s: %v\n", w, e)
+					} else {
+						pq.RecordSuccess(w)
+						totalProcessed++
+					}
+				}
+
+				if err := pq.Save(); err != nil {
+					log.Fatal(err)
+				}
+				if err := dict.Save(); err != nil {
+					log.Fatal(err)
+				}
+				if err := lemma.Save(); err != nil {
+					log.Fatal(err)
+				}
+				if err := processLog.Save(); err != nil {
+					log.Fatal(err)
+				}
+			}
+
+			failed := pq.RemoveFailed()
+			if err := pq.Save(); err != nil {
+				log.Fatal(err)
+			}
+			if len(failed) > 0 {
+				fmt.Printf("\nFailed words (3+ errors):\n")
+				for _, f := range failed {
+					fmt.Printf("  %s: %s\n", f.Word, f.LastError)
+				}
+			}
+			pq.PrintStatus()
+			fmt.Printf("Batch done: %d processed, %d failed\n", totalProcessed, totalFailed)
+		}
 		}
 
 		fmt.Println("scan 完成")
