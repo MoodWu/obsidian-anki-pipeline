@@ -61,13 +61,9 @@ func main() {
 
 		dir := args[0]
 		dryRun := false
-		pendingOnly := false
 		for _, a := range args[1:] {
 			if a == "--dry-run" {
 				dryRun = true
-			}
-			if a == "--pending" {
-				pendingOnly = true
 			}
 		}
 
@@ -106,7 +102,7 @@ func main() {
 			AI:          aiClient,
 			DictDir:     dictDir,
 			DryRun:      dryRun,
-			PendingOnly: pendingOnly,
+			PendingOnly: true,
 			Pending:     pq,
 			AnkiDeck:  ankiDeck,
 			AnkiModel: ankiModel,
